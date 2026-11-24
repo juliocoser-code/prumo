@@ -1,6 +1,6 @@
 // Prumo — service worker: recebe o push com o app fechado, mostra a notificação
 // e, ao tocar, abre direto o item correspondente.
-const VERSION = 'prumo-0.1.1';
+const VERSION = 'prumo-0.1.2';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './store.js', './icons.js', './demo-data.js',
   './shared/scheduler.js', './shared/nlp.js', './fonts/Lora.ttf', './icons/icon-192.png', './icons/icon-180.png', './icons/badge-96.png', './manifest.webmanifest'];
 

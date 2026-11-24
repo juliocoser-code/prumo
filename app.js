@@ -2,7 +2,7 @@
 import { icon } from './icons.js';
 import { CONTEXTS } from './demo-data.js';
 import { createStore, serverConfig, saveServerConfig } from './store.js';
-import { tzParts, zoned, localDateKey, hhmm, isQuiet } from './shared/scheduler.js';
+import { tzParts, zoned, localDateKey, hhmm, isQuiet, DEFAULT_SETTINGS } from './shared/scheduler.js';
 import { parseNote } from './shared/nlp.js';
 
 const TZ = 'America/Sao_Paulo';
@@ -129,7 +129,7 @@ function skeleton() {
     ${line('40%', 20, 26)}<div class="sk" style="height:230px;border-radius:22px;margin-top:12px"></div></div>`;
 }
 function errbar() {
-  return ui.error ? `<div class="errbar">${icon('alert', { size: 20 })}<span>${esc(ui.error)}</span><button data-act="retry">Tentar de novo</button></div>` : '';
+  return ui.error ? `<div class="errbar">${icon('alert', { size: 20 })}<span>${esc(ui.error)}</span>${/Ajustes/.test(ui.error) ? '<a href="#/config" style="background:var(--late);color:#fff;height:32px;padding:0 12px;border-radius:9px;font-size:13.5px;font-weight:700;display:flex;align-items:center;text-decoration:none">Abrir Ajustes</a>' : '<button data-act="retry">Tentar de novo</button>'}</div>` : '';
 }
 
 // ---------- telas ----------
@@ -234,7 +234,7 @@ function emailLine() {
   return e.ok ? `Lido às ${T(e.at)} · ${e.read} mensagem${e.read === 1 ? '' : 's'} nova${e.read === 1 ? '' : 's'}` : `Erro às ${T(e.at)}: ${e.error}`;
 }
 function screenConfig() {
-  const st = S.settings, cfg = serverConfig();
+  const st = { ...DEFAULT_SETTINGS, ...(S.settings || {}) }, cfg = serverConfig();
   const sw = (key, on) => `<button class="switch ${on ? 'on' : ''}" data-act="toggle" data-key="${key}" role="switch" aria-checked="${on}"></button>`;
   const ico = (name, bg) => `<span class="ico" style="background:${bg}">${icon(name, { size: 17, stroke: 2 })}</span>`;
   return `<div class="screen">${errbar()}<div class="eyebrow">Prumo · versão 0.1</div><h1 class="title">Ajustes</h1>
@@ -315,6 +315,12 @@ function route() {
   return { parts: path.split('/').filter(Boolean), q: new URLSearchParams(qs || '') };
 }
 function render() {
+  try { renderInner(); } catch (e) {
+    console.error(e);
+    $('#view').innerHTML = `<div class="screen"><div class="errbar">${icon('alert', { size: 20 })}<span>Algo deu errado nesta tela (${esc(e.message)}).</span></div><div class="btnrow" style="padding:0"><button class="btn light" data-act="disconnect">Voltar ao modo demonstração</button><a class="btn" href="#/hoje" style="text-decoration:none">Ir para Hoje</a></div></div>`;
+  }
+}
+function renderInner() {
   const { parts, q } = route();
   const view = $('#view');
   const tab = parts[0] === 'item' ? null : parts[0] || 'hoje';
@@ -368,7 +374,7 @@ function openSnooze(id, mode = 'snooze') {
   const rem = activeReminder(id);
   let allowQuiet = rem?.allowQuiet || false;
   const opts = snoozeOptions();
-  const st = S.settings;
+  const st = { ...DEFAULT_SETTINGS, ...(S.settings || {}) };
   const sh = openSheet(`<div class="sheet-h"><h3>${mode === 'snooze' ? 'Adiar' : 'Lembrete'}</h3><button class="xbtn" data-act="close-sheet" aria-label="Fechar">${icon('x', { size: 16, stroke: 2.2 })}</button></div>
     <p class="lede" style="margin:-4px 0 14px">${esc(it.title)}</p>
     <div class="opts">${opts.map((o) => `<button class="opt" data-pick="${o.at.toISOString()}">${icon('clock', { size: 19 })}${o.label}<small>${dayDiff(o.at) === 0 ? '' : dayLabel(o.at) + ', '}${T(o.at)}</small></button>`).join('')}
@@ -404,7 +410,7 @@ function openCompose(prefill = '') {
     <div class="understood">Entendi</div><div class="chips" id="cwhen"></div>
     <div class="understood">Tipo</div><div class="chips" id="ckind"></div>
     <div class="understood">Para</div><div class="chips" id="cctx"></div>
-    <div class="toggle-row"><div class="tx">Pode tocar no horário de silêncio<small>${S.settings.quietStart}–${S.settings.quietEnd}</small></div><button class="switch" id="caq" role="switch"></button></div>
+    <div class="toggle-row"><div class="tx">Pode tocar no horário de silêncio<small>${S.settings?.quietStart || '22:00'}–${S.settings?.quietEnd || '07:00'}</small></div><button class="switch" id="caq" role="switch"></button></div>
     <button class="cta" id="csave" disabled>${icon('check', { size: 19, stroke: 2.4 })}Salvar</button></div>`, (el) => {
     const ta = el.querySelector('#note'); ta.value = prefill;
     const parsed = () => parseNote(ta.value, now(), TZ);
