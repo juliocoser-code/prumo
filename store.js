@@ -18,7 +18,13 @@ export function leadTime(item) {
 }
 
 export function serverConfig() { try { return JSON.parse(localStorage.getItem(CFG)) || null; } catch { return null; } }
-export function saveServerConfig(cfg) { if (cfg) localStorage.setItem(CFG, JSON.stringify(cfg)); else localStorage.removeItem(CFG); }
+/** Aceita o endereço com ou sem /prumo no final (ex.: .../functions/v1 ou .../functions/v1/prumo) */
+export function normalizeServerUrl(u) {
+  u = String(u || '').trim().replace(/\/+$/, '').replace(/\/prumo-api$/, '');
+  if (/\/functions\/v1$/.test(u)) u += '/prumo';
+  return u;
+}
+export function saveServerConfig(cfg) { if (cfg) localStorage.setItem(CFG, JSON.stringify({ ...cfg, url: normalizeServerUrl(cfg.url), key: String(cfg.key || '').trim() })); else localStorage.removeItem(CFG); }
 
 class DemoStore {
   mode = 'demo';
@@ -117,12 +123,15 @@ class DemoStore {
 
 class RemoteStore {
   mode = 'server';
-  constructor(cfg) { this.cfg = cfg; }
+  constructor(cfg) { this.cfg = { ...cfg, url: normalizeServerUrl(cfg.url), key: String(cfg.key || '').trim() }; }
   async call(path, body, method = body ? 'POST' : 'GET') {
     const res = await fetch(`${this.cfg.url.replace(/\/$/, '')}/prumo-api${path}`, {
       method, headers: { 'content-type': 'application/json', 'x-prumo-key': this.cfg.key }, body: body ? JSON.stringify(body) : undefined,
     });
-    if (!res.ok) throw new Error(`Servidor respondeu ${res.status}`);
+    if (!res.ok) {
+      const why = res.status === 401 ? 'chave errada — confira em Ajustes' : res.status === 404 ? 'endereço do servidor errado — confira em Ajustes' : `erro ${res.status}`;
+      throw new Error(why);
+    }
     return res.json();
   }
   async init() { return this.call('/state'); }
