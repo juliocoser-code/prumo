@@ -20,20 +20,44 @@ const DOW = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sába
 const MON = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
 const now = () => new Date();
 const T = (d) => hhmm(d, TZ);
+const validDate = (d) => d != null && d !== '' && Number.isFinite(new Date(d).getTime());
+// Dados do servidor podem vir com nomes em snake_case (due_at) ou com datas vazias/inválidas.
+// Normaliza aqui para nenhuma tela quebrar por causa de uma pendência mal formada.
+const DATE_KEYS = ['dueAt', 'receivedAt', 'waitingSince', 'completedAt', 'snoozedUntil', 'reminderAt', 'createdAt', 'lastMessageAt', 'fireAt'];
+const snake = (k) => k.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase());
+function fixRecord(o) {
+  if (!o || typeof o !== 'object') return o;
+  const r = { ...o };
+  for (const k of DATE_KEYS) {
+    if (r[k] == null && r[snake(k)] != null) r[k] = r[snake(k)];
+    if (r[k] != null && !validDate(r[k])) r[k] = null;
+  }
+  if (r.kind === 'responder' && !r.receivedAt) r.receivedAt = r.createdAt || null;
+  if (r.kind === 'retorno' && !r.waitingSince) r.waitingSince = r.createdAt || null;
+  if (Array.isArray(r.history)) r.history = r.history.filter((h) => h && validDate(h.at));
+  return r;
+}
+function normalizeState(st) {
+  if (!st || typeof st !== 'object') return { items: [], reminders: [], settings: {}, log: [] };
+  return { ...st, items: (st.items || []).map(fixRecord), reminders: (st.reminders || []).map(fixRecord).filter((r) => r.fireAt), settings: st.settings || {}, log: st.log || [] };
+}
 function dayDiff(d) { const a = tzParts(now(), TZ), b = tzParts(d, TZ); return Math.round((Date.UTC(b.y, b.m - 1, b.d) - Date.UTC(a.y, a.m - 1, a.d)) / 864e5); }
 function dayLabel(d, cap = true) {
   const n = dayDiff(d), p = tzParts(d, TZ);
+  if (p.invalid) return cap ? 'Sem data' : 'sem data';
   const s = n === 0 ? 'hoje' : n === 1 ? 'amanhã' : n === -1 ? 'ontem' : n > 1 && n < 7 ? DOW[p.wd] : `${String(p.d).padStart(2, '0')}/${String(p.m).padStart(2, '0')}`;
   return cap ? s[0].toUpperCase() + s.slice(1) : s;
 }
 const whenLabel = (d) => `${dayLabel(d)}, ${T(d)}`;
 function ago(d) {
+  if (!validDate(d)) return 'sem data';
   const m = Math.max(1, Math.round((now() - new Date(d)) / 60e3));
   if (m < 60) return `${m} min`;
   const h = Math.round(m / 60); if (h < 24) return `${h}h`;
   const dd = Math.floor(h / 24); return `${dd} dia${dd > 1 ? 's' : ''}`;
 }
 function until(d) {
+  if (!validDate(d)) return '';
   const m = Math.round((new Date(d) - now()) / 60e3);
   if (m <= 0) return 'agora';
   if (m < 60) return `em ${m} min`;
@@ -61,7 +85,7 @@ function items() { const all = S.items.filter((i) => i.status !== 'deleted'); re
 function buckets() {
   const all = items().filter(isOpen), n = now();
   const live = all.filter((i) => !snoozed(i));
-  const appts = live.filter((i) => i.kind === 'compromisso' && new Date(i.dueAt) > n - 10 * 60e3).sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
+  const appts = live.filter((i) => i.kind === 'compromisso' && i.dueAt && new Date(i.dueAt) > n - 10 * 60e3).sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
   const next = appts[0] || null;
   const soon = (i) => i.dueAt && new Date(i.dueAt) - n < 3 * 3600e3;
   const attention = [
@@ -73,7 +97,7 @@ function buckets() {
   const waiting = live.filter((i) => i.kind === 'retorno').sort((a, b) => new Date(a.waitingSince) - new Date(b.waitingSince));
   const later = live.filter((i) => i !== next && i.dueAt && dayDiff(i.dueAt) === 0 && !attention.includes(i) && i.kind !== 'retorno').sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
   const doneToday = items().filter((i) => i.status === 'done' && i.completedAt && dayDiff(i.completedAt) === 0);
-  const todayAppts = all.filter((i) => i.kind === 'compromisso' && dayDiff(i.dueAt) === 0);
+  const todayAppts = all.filter((i) => i.kind === 'compromisso' && i.dueAt && dayDiff(i.dueAt) === 0);
   return { next, attention, waiting, later, doneToday, todayAppts, snoozedN: all.filter(snoozed).length, late: attention.filter((i) => cls(i) === 'late') };
 }
 
@@ -321,6 +345,7 @@ function render() {
   }
 }
 function renderInner() {
+  S = normalizeState(S);
   const { parts, q } = route();
   const view = $('#view');
   const tab = parts[0] === 'item' ? null : parts[0] || 'hoje';

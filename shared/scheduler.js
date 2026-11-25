@@ -25,7 +25,9 @@ const WD = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
 export function tzParts(date, tz) {
   const o = {};
-  for (const p of fmt(tz).formatToParts(new Date(date))) o[p.type] = p.value;
+  const d = date == null || date === '' ? new Date(NaN) : new Date(date);
+  if (!Number.isFinite(d.getTime())) return { y: NaN, m: NaN, d: NaN, hh: NaN, mm: NaN, ss: NaN, wd: NaN, invalid: true }; // data vazia ou inválida: não derruba a tela
+  for (const p of fmt(tz).formatToParts(d)) o[p.type] = p.value;
   return { y: +o.year, m: +o.month, d: +o.day, hh: +o.hour, mm: +o.minute, ss: +o.second, wd: WD[o.weekday] };
 }
 function offsetMin(date, tz) {
@@ -67,6 +69,7 @@ const KIND_LABEL = { compromisso: 'Compromisso', prazo: 'Prazo', retorno: 'Cobra
 
 export function hhmm(date, tz) {
   const p = tzParts(date, tz);
+  if (p.invalid) return '--:--';
   return `${String(p.hh).padStart(2, '0')}:${String(p.mm).padStart(2, '0')}`;
 }
 
