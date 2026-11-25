@@ -60,3 +60,18 @@ export function parseNote(text, now = new Date(), tz = 'America/Sao_Paulo') {
 
   return { when, kind, context, matched: found };
 }
+
+// ---------- rotinas (coisas que se repetem na semana) ----------
+const WD_TOKENS = [[0, /\b(dom|domingos?)\b/], [1, /\b(seg|segundas?(?:-feiras?)?)\b/], [2, /\b(ter|tercas?(?:-feiras?)?)\b/], [3, /\b(qua|quartas?(?:-feiras?)?)\b/],
+  [4, /\b(qui|quintas?(?:-feiras?)?)\b/], [5, /\b(sex|sextas?(?:-feiras?)?)\b/], [6, /\b(sab|sabados?)\b/]];
+/** "academia seg, qua e sex 6h30", "toda terça e quinta", "todo dia às 7", "dias úteis" → { days: [1,3,5] } ou null */
+export function parseRepeat(text) {
+  const t = strip(String(text || ''));
+  if (/\b(todo dia|todos os dias|diariamente)\b/.test(t)) return { days: [0, 1, 2, 3, 4, 5, 6] };
+  if (/\b(dias uteis|de segunda a sexta|seg(?:unda)? a sex(?:ta)?)\b/.test(t)) return { days: [1, 2, 3, 4, 5] };
+  const days = WD_TOKENS.filter(([, re]) => re.test(t)).map(([d]) => d);
+  const every = /\b(tod[ao]s?|sempre|toda semana|semanal)\b/.test(t) || /\b(segundas|tercas|quartas|quintas|sextas|sabados|domingos)\b/.test(t);
+  if (days.length >= 2 || (days.length === 1 && every)) return { days };
+  if (/\b(\d)\s*x\s*(por|na) semana\b/.test(t)) { const n = +t.match(/\b(\d)\s*x/)[1]; return { days: { 1: [1], 2: [2, 4], 3: [1, 3, 5], 4: [1, 2, 4, 5], 5: [1, 2, 3, 4, 5], 6: [1, 2, 3, 4, 5, 6] }[n] || [1, 3, 5] }; }
+  return null;
+}

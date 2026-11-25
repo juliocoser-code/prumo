@@ -1,9 +1,9 @@
 // Prumo — assistente pessoal do Julio. App instalável no iPhone (PWA).
 import { icon } from './icons.js';
 import { CONTEXTS } from './demo-data.js';
-import { createStore, serverConfig, saveServerConfig } from './store.js';
+import { createStore, serverConfig, saveServerConfig, leadTime } from './store.js';
 import { tzParts, zoned, localDateKey, hhmm, isQuiet, DEFAULT_SETTINGS } from './shared/scheduler.js';
-import { parseNote } from './shared/nlp.js';
+import { parseNote, parseRepeat } from './shared/nlp.js';
 
 const TZ = 'America/Sao_Paulo';
 const $ = (s, el = document) => el.querySelector(s);
@@ -122,7 +122,7 @@ function row(i, { quick = true } = {}) {
     <span class="badge">${icon(ic, { size: 19 })}</span>
     <button class="main" data-act="open" data-id="${i.id}">
       <div class="t">${esc(i.title)}${i.messages > 1 ? `<span class="msgs">${i.messages}</span>` : ''}</div>
-      <div class="m">${who}<span class="ctx"><i style="background:${k.color}"></i>${k.label}</span></div>
+      <div class="m">${who}${isRoutineItem(i) ? `<span title="Rotina">${icon('refresh', { size: 13 })}</span>` : ''}<span class="ctx"><i style="background:${k.color}"></i>${k.label}</span></div>
       <div class="pillwrap">${pill(i)}</div>
     </button>
     ${quick && c !== 'done' ? `<div class="qa">
@@ -272,6 +272,10 @@ function screenConfig() {
     <div class="set">${ico('alert', '#C8302A')}<div class="tx">Nova pendência importante<small>WhatsApp e e-mail classificados como importantes</small></div>${sw('importantAlerts', st.importantAlerts)}</div>
     <div class="set">${ico('chat', '#3557D4')}<div class="tx">Agrupar a mesma conversa<small>Um alerta a cada ${st.groupWindowMin} min por conversa</small></div><span class="val">${st.groupWindowMin} min</span></div>
   </div></div>
+  <div class="group"><div class="gh">Rotinas da semana</div><div class="card">
+    ${loadRoutines().map((r) => `<div class="set">${ico('refresh', ctx(r.context).color)}<div class="tx">${esc(r.title)}<small>${daysLabel(r.days)} às ${pad2(r.hh)}:${pad2(r.mm)}${r.paused ? ' · pausada' : ''}</small></div><button class="linkbtn" data-act="rt-pause" data-rid="${r.id}">${r.paused ? 'Retomar' : 'Pausar'}</button><button class="linkbtn" data-act="rt-edit" data-rid="${r.id}" style="margin-left:10px">Editar</button></div>`).join('')}
+    <button class="set" data-act="rt-new">${ico('plus', '#E0521D')}<div class="tx">Nova rotina<small>Academia, inglês, reunião de segunda…</small></div>${icon('chevron', { size: 16 })}</button>
+  </div><div class="gf">O app cria cada dia sozinho, até 3 dias antes, e te lembra no horário. Abra o Prumo ao menos a cada 3 dias para manter a fila em dia.</div></div>
   <div class="group"><div class="gh">Canais conectados</div><div class="card">
     <div class="set">${ico('chat', '#23875A')}<div class="tx">WhatsApp pessoal<small>Pela API oficial, após virar Business</small></div><span class="tag">Em preparação</span></div>
     <div class="set">${ico('mail', '#3557D4')}<div class="tx">Webmail<small>${esc(emailLine())}</small></div><span class="tag ${ui.inbox?.email?.ok ? 'ok' : ''}">${ui.inbox?.email ? (ui.inbox.email.ok ? 'Conectado' : 'Com erro') : 'Em preparação'}</span></div>
@@ -316,7 +320,7 @@ function screenItem(id, q) {
   const fromPush = q.get('from') === 'push';
   const replyBtn = i.kind === 'responder' ? `<button class="reply wide" data-act="reply" data-id="${i.id}">${icon(i.channel === 'email' ? 'mail' : 'chat', { size: 19 })}Responder ${i.channel === 'email' ? 'por e-mail' : 'no WhatsApp'}</button>` : '';
   return `<div class="screen" style="padding-bottom:${i.kind === 'responder' ? 200 : 140}px">
-    <div class="navbar"><button class="backbtn" data-act="back">${icon('back', { size: 22 })}Voltar</button>${fromPush ? `<span class="from-push">${icon('bell', { size: 15 })}Aberto pela notificação</span>` : ''}</div>
+    <div class="navbar"><button class="backbtn" data-act="back">${icon('back', { size: 22 })}Voltar</button>${fromPush ? `<span class="from-push">${icon('bell', { size: 15 })}Aberto pela notificação</span>` : ''}<button class="backbtn" data-act="edit" data-id="${i.id}">${icon('pen', { size: 18 })}Editar</button></div>
     <div class="status-banner ${banner[0]}">${icon(banner[1], { size: 19 })}${banner[2]}<small>${banner[3]}</small></div>
     <h1 class="item-title">${esc(i.title)}</h1>
     <div class="who"><span class="avatar" style="background:${k.color}">${esc(initials)}</span><div><div class="n">${esc(i.person || k.label)}</div><div class="s">${icon(chIcon(i), { size: 14 })}${chLabel(i)} · <span style="color:${k.color};font-weight:600">${k.label}</span></div></div></div>
@@ -425,14 +429,60 @@ function openSnooze(id, mode = 'snooze') {
 
 // ---------- anotar (texto e voz) ----------
 let rec = null;
-function openCompose(prefill = '') {
-  const draft = { text: prefill, kind: null, context: null, when: undefined, allowQuiet: false };
+// ---------- rotinas: coisas que se repetem na semana (academia, inglês, reunião de segunda) ----------
+// Ficam guardadas neste aparelho. O app cria sozinho a pendência de cada dia com até 3 dias de antecedência,
+// e ela segue o caminho normal (servidor agenda o push). Funciona no modo demonstração e no servidor.
+const RKEY = 'prumo:rotinas';
+const WD_SHORT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const WD_ORDER = [1, 2, 3, 4, 5, 6, 0];
+const loadRoutines = () => { try { return JSON.parse(localStorage.getItem(RKEY)) || []; } catch { return []; } };
+const saveRoutines = (r) => { try { localStorage.setItem(RKEY, JSON.stringify(r)); } catch {} };
+function daysLabel(days) {
+  const d = [...days].sort((a, b) => WD_ORDER.indexOf(a) - WD_ORDER.indexOf(b));
+  if (d.length === 7) return 'todo dia';
+  if (d.length === 5 && [1, 2, 3, 4, 5].every((x) => d.includes(x))) return 'seg a sex';
+  return d.map((x) => WD_SHORT[x].toLowerCase()).join(', ').replace(/, ([^,]*)$/, ' e $1');
+}
+const pad2 = (x) => String(x).padStart(2, '0');
+let syncingRoutines = false;
+async function syncRoutines() {
+  if (syncingRoutines || !store) return; syncingRoutines = true;
+  try {
+    const rs = loadRoutines(); let made = 0;
+    const p = tzParts(now(), TZ);
+    for (const r of rs) {
+      if (r.paused) continue;
+      r.made ||= {};
+      for (let off = 0; off <= 3; off++) {
+        const when = zoned(p.y, p.m, p.d + off, r.hh, r.mm, TZ);
+        const wd = tzParts(when, TZ).wd, key = localDateKey(when, TZ);
+        if (!r.days.includes(wd) || r.made[key] || when <= now()) continue;
+        const res = await store.create({ title: r.title, kind: r.kind, context: r.context, when: when.toISOString(), allowQuiet: !!r.allowQuiet });
+        if (!res) break;
+        r.made[key] = res.item?.id || true; made++;
+        if (res.state) S = res.state;
+        saveRoutines(rs); // grava a cada uma: se cair no meio, não duplica
+      }
+      const old = localDateKey(new Date(now().getTime() - 30 * 864e5), TZ); // limpa o histórico com mais de 30 dias
+      for (const k of Object.keys(r.made)) if (k < old) delete r.made[k];
+    }
+    saveRoutines(rs);
+    if (made && store.mode === 'server') { const st = await store.init().catch(() => null); if (st) S = st; }
+    if (made) render();
+  } catch (e) { console.warn('rotinas', e); }
+  finally { syncingRoutines = false; }
+}
+const isRoutineItem = (i) => loadRoutines().some((r) => Object.values(r.made || {}).includes(i.id) || (r.title === i.title && i.channel === 'manual'));
+
+function openCompose(prefill = '', { repeat = false } = {}) {
+  const draft = { text: prefill, kind: null, context: null, when: undefined, allowQuiet: false, days: repeat ? [1, 3, 5] : undefined, time: undefined };
   const kinds = [['nota', 'Lembrete'], ['compromisso', 'Compromisso'], ['prazo', 'Prazo'], ['retorno', 'Cobrar retorno']];
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const sh = openSheet(`<div class="sheet-h"><h3>Anotar</h3><button class="xbtn" data-act="close-sheet" aria-label="Fechar">${icon('x', { size: 16, stroke: 2.2 })}</button></div>
     <div id="cbody"><div class="composer"><textarea id="note" rows="3" placeholder="Ex.: cobrar o orçamento da câmara fria sexta de manhã" enterkeyhint="done"></textarea>
       <div class="bar2"><span class="hint" id="mhint">Fale ou escreva do seu jeito</span><button class="mic" id="mic">${icon('mic', { size: 18, stroke: 2 })}<span id="micl">Falar</span><span class="wave"><i></i><i></i><i></i><i></i></span></button></div></div>
     <div class="understood">Entendi</div><div class="chips" id="cwhen"></div>
+    <div class="understood">Repetir</div><div class="chips" id="crep"></div>
     <div class="understood">Tipo</div><div class="chips" id="ckind"></div>
     <div class="understood">Para</div><div class="chips" id="cctx"></div>
     <div class="toggle-row"><div class="tx">Pode tocar no horário de silêncio<small>${S.settings?.quietStart || '22:00'}–${S.settings?.quietEnd || '07:00'}</small></div><button class="switch" id="caq" role="switch"></button></div>
@@ -443,12 +493,26 @@ function openCompose(prefill = '') {
       const p = parsed();
       const when = draft.when !== undefined ? draft.when : p.when;
       const kind = draft.kind || p.kind, context = draft.context || p.context || 'pessoal';
+      const days = draft.days !== undefined ? draft.days : (parseRepeat(ta.value)?.days || []);
+      const tp = when ? tzParts(when, TZ) : null;
+      const time = draft.time || (tp && p.matched.some((x) => /\d|manh|tarde|noite|meio/.test(x)) ? `${pad2(tp.hh)}:${pad2(tp.mm)}` : '07:00');
+      el.querySelector('#crep').innerHTML = WD_ORDER.map((d) => `<button class="chip ${days.includes(d) ? 'on' : ''}" data-wd="${d}">${WD_SHORT[d]}</button>`).join('')
+        + (days.length ? `<button class="chip" data-cact="norep">${icon('x', { size: 13 })}Não repetir</button>` : '');
+      if (days.length) {
+        el.querySelector('#cwhen').innerHTML = `<span class="chip when">${icon('refresh', { size: 15 })}${daysLabel(days)}</span><label class="chip when">${icon('bell', { size: 15 })}às <input type="time" id="rtime" value="${time}" style="border:0;background:transparent;font:inherit;color:inherit;width:74px"></label>`;
+        el.querySelector('#rtime').onchange = (e) => { if (e.target.value) { draft.time = e.target.value; paint(); } };
+        el.querySelector('#csave').disabled = !ta.value.trim();
+        el.querySelector('#csave').innerHTML = `${icon('check', { size: 19, stroke: 2.4 })}Salvar rotina · ${daysLabel(days)}, ${time}`;
+        el.querySelector('#ckind').innerHTML = kinds.filter(([k]) => k !== 'retorno').map(([k, l]) => `<button class="chip ${k === kind ? 'on' : ''}" data-kind="${k}">${l}</button>`).join('');
+        el.querySelector('#cctx').innerHTML = Object.entries(CONTEXTS).map(([k, c]) => `<button class="chip ${k === context ? 'on' : ''}" data-ctx="${k}"><i class="c" style="background:${c.color}"></i>${c.label}</button>`).join('');
+        return { when, kind: kind === 'retorno' ? 'nota' : kind, context, days, time };
+      }
       el.querySelector('#cwhen').innerHTML = when ? `<button class="chip when" data-cact="when">${icon('bell', { size: 15 })}${whenLabel(when)}</button><button class="chip" data-cact="nowhen">${icon('x', { size: 13 })}Sem lembrete</button>` : `<button class="chip when none" data-cact="when">${icon('plus', { size: 15 })}Escolher quando lembrar</button>`;
       el.querySelector('#ckind').innerHTML = kinds.map(([k, l]) => `<button class="chip ${k === kind ? 'on' : ''}" data-kind="${k}">${l}</button>`).join('');
       el.querySelector('#cctx').innerHTML = Object.entries(CONTEXTS).map(([k, c]) => `<button class="chip ${k === context ? 'on' : ''}" data-ctx="${k}"><i class="c" style="background:${c.color}"></i>${c.label}</button>`).join('');
       el.querySelector('#csave').disabled = !ta.value.trim();
       el.querySelector('#csave').innerHTML = `${icon('check', { size: 19, stroke: 2.4 })}${when ? `Salvar e lembrar ${dayLabel(when, false)}, ${T(when)}` : 'Salvar'}`;
-      return { when, kind, context };
+      return { when, kind, context, days };
     };
     ta.addEventListener('input', paint);
     el.addEventListener('click', (e) => {
@@ -456,6 +520,8 @@ function openCompose(prefill = '') {
       if (b.dataset.kind) { draft.kind = b.dataset.kind; paint(); }
       if (b.dataset.ctx) { draft.context = b.dataset.ctx; paint(); }
       if (b.dataset.cact === 'nowhen') { draft.when = null; paint(); }
+      if (b.dataset.wd) { const d = +b.dataset.wd, cur = paint().days || []; draft.days = cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d]; paint(); }
+      if (b.dataset.cact === 'norep') { draft.days = []; paint(); }
       if (b.dataset.cact === 'when') {
         const cur = paint().when || new Date(now().getTime() + 3600e3);
         const inp = document.createElement('input'); inp.type = 'datetime-local'; inp.value = localInput(cur); inp.className = 'chip'; inp.style.cssText = 'height:36px;padding:0 10px';
@@ -477,8 +543,20 @@ function openCompose(prefill = '') {
       try { rec.start(); } catch { rec = null; }
     };
     el.querySelector('#csave').onclick = async () => {
-      const { when, kind, context } = paint();
-      const title = ta.value.trim().replace(/^./, (c) => c.toUpperCase());
+      const { when, kind, context, days, time } = paint();
+      let title = ta.value.trim().replace(/^./, (c) => c.toUpperCase());
+      if (days?.length) {
+        const [hh, mm] = time.split(':').map(Number);
+        // "Academia seg, qua e sex 6h30" → "Academia"
+        const short = title.replace(/[\s,]+(tod[ao]s?|sempre|diariamente|dias [úu]teis|de segunda|(seg|ter|qua|qui|sex|s[áa]b|dom)\b|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|\d\s*x\s*(por|na) semana|[àa]s?\s+\d|\d{1,2}\s*(h|:)).*$/i, '').trim();
+        if (short.length >= 2) title = short;
+        const rs = loadRoutines(); rs.push({ id: 'rt' + Date.now().toString(36), title, kind, context, days: [...days].sort(), hh, mm, allowQuiet: draft.allowQuiet, made: {}, createdAt: new Date().toISOString() });
+        saveRoutines(rs);
+        await syncRoutines(); render();
+        el.querySelector('#cbody').innerHTML = `<div class="success"><div class="ring">${icon('check', { size: 38, stroke: 2.6 })}</div><h4>Rotina criada.</h4><p>${esc(title)} · ${daysLabel(days)} às ${time}. Te lembro em cada dia.</p></div>`;
+        setTimeout(() => { closeSheet(); toast(`Rotina salva · ${daysLabel(days)}, ${time}`, { ic: 'refresh' }); }, 1500);
+        return;
+      }
       const r = await safe(() => store.create({ title, kind, context, when: when ? when.toISOString() : null, allowQuiet: draft.allowQuiet })); if (!r) return;
       S = r.state; render();
       el.querySelector('#cbody').innerHTML = `<div class="success"><div class="ring">${icon('check', { size: 38, stroke: 2.6 })}</div><h4>Anotado.</h4><p>${when ? `Te lembro ${dayLabel(when, false)} às ${T(when)}.` : 'Está nas suas pendências.'}</p></div>`;
@@ -488,6 +566,123 @@ function openCompose(prefill = '') {
     setTimeout(() => ta.focus(), 350);
   });
   return sh;
+}
+
+// ---------- editar pendência / evento ----------
+function openEdit(id) {
+  const it = S.items.find((x) => x.id === id); if (!it) return;
+  const d = { title: it.title, kind: it.kind, context: it.context || 'pessoal', place: it.place || '', dueAt: it.dueAt || null };
+  const canKind = it.kind !== 'responder';
+  const canWhen = it.kind !== 'responder' && it.kind !== 'retorno';
+  const kinds = [['nota', 'Lembrete'], ['compromisso', 'Compromisso'], ['prazo', 'Prazo']];
+  openSheet(`<div class="sheet-h"><h3>Editar</h3><button class="xbtn" data-act="close-sheet" aria-label="Fechar">${icon('x', { size: 16, stroke: 2.2 })}</button></div>
+    <div class="composer"><textarea id="etitle" rows="2"></textarea></div>
+    ${canWhen ? `<div class="understood">Quando</div><div class="chips"><label class="chip when">${icon('calendar', { size: 15 })}<input type="datetime-local" id="ewhen" style="border:0;background:transparent;font:inherit;color:inherit"></label><button class="chip" id="enowhen">${icon('x', { size: 13 })}Sem data</button></div>` : ''}
+    ${canKind && it.kind !== 'retorno' ? `<div class="understood">Tipo</div><div class="chips" id="ekind"></div>` : ''}
+    <div class="understood">Para</div><div class="chips" id="ectx"></div>
+    <div class="understood" id="eplaceh">Local</div><div class="composer" id="eplacew"><input id="eplace" placeholder="Opcional" style="width:100%;border:0;background:transparent;font:inherit;padding:12px 14px"></div>
+    <button class="cta" id="esave">${icon('check', { size: 19, stroke: 2.4 })}Salvar alterações</button>
+    <button class="cta dark" id="edel" style="background:transparent;color:var(--late);box-shadow:none;margin-top:6px">${icon('x', { size: 18 })}Apagar</button>`, (el) => {
+    el.querySelector('#etitle').value = d.title;
+    el.querySelector('#eplace').value = d.place;
+    const w = el.querySelector('#ewhen'); if (w && d.dueAt) w.value = localInput(new Date(d.dueAt));
+    const paint = () => {
+      const k = el.querySelector('#ekind'); if (k) k.innerHTML = kinds.map(([x, l]) => `<button class="chip ${x === d.kind ? 'on' : ''}" data-ek="${x}">${l}</button>`).join('');
+      el.querySelector('#ectx').innerHTML = Object.entries(CONTEXTS).map(([x, c]) => `<button class="chip ${x === d.context ? 'on' : ''}" data-ec="${x}"><i class="c" style="background:${c.color}"></i>${c.label}</button>`).join('');
+      const showPlace = d.kind === 'compromisso' || d.place; el.querySelector('#eplaceh').style.display = el.querySelector('#eplacew').style.display = showPlace ? '' : 'none';
+    };
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.ek) { d.kind = b.dataset.ek; paint(); }
+      if (b.dataset.ec) { d.context = b.dataset.ec; paint(); }
+      if (b.id === 'enowhen') { if (w) w.value = ''; }
+    });
+    el.querySelector('#esave').onclick = async () => {
+      const title = el.querySelector('#etitle').value.trim(); if (!title) return toast('Escreva um título', { err: true, ic: 'alert' });
+      const dueAt = w ? (w.value ? fromLocalInput(w.value).toISOString() : null) : it.dueAt || null;
+      const place = el.querySelector('#eplace').value.trim();
+      const upd = { ...it, title, kind: d.kind, context: d.context, place: place || undefined, dueAt: dueAt || undefined };
+      (upd.history = [...(it.history || [])]).push({ at: now().toISOString(), what: 'Editado' });
+      const timeChanged = (it.dueAt || null) !== (dueAt || null) || it.kind !== d.kind;
+      let reminders = S.reminders;
+      if (timeChanged && !dueAt) reminders = reminders.map((r) => (r.itemId === id && r.status === 'scheduled' ? { ...r, status: 'canceled' } : r));
+      const before = { items: S.items, reminders: S.reminders };
+      const st = await safe(() => store.undo({ items: S.items.map((x) => (x.id === id ? upd : x)), reminders })); if (!st) return;
+      S = st;
+      if (timeChanged && dueAt && it.status === 'open') {
+        const at = leadTime(upd), rem = activeReminder(id);
+        if (at && new Date(at) > now()) { const st2 = await safe(() => store.setReminder(id, at, rem?.allowQuiet || false)); if (st2) S = st2; }
+      }
+      closeSheet(); render();
+      toast(timeChanged && dueAt ? `Salvo · ${whenLabel(dueAt)}` : 'Alterações salvas', { undo: before, ic: 'check' });
+    };
+    el.querySelector('#edel').onclick = async () => {
+      if (!confirm(`Apagar "${it.title}"? O lembrete dele também é cancelado.`)) return;
+      const before = { items: S.items, reminders: S.reminders };
+      const st = await safe(() => store.undo({
+        items: S.items.map((x) => (x.id === id ? { ...x, status: 'deleted', deletedAt: now().toISOString() } : x)),
+        reminders: S.reminders.map((r) => (r.itemId === id && r.status === 'scheduled' ? { ...r, status: 'canceled' } : r)),
+      })); if (!st) return;
+      S = st; closeSheet();
+      if (route().parts[0] === 'item') history.back(); else render();
+      toast('Apagado', { undo: before, ic: 'x' });
+    };
+    paint();
+  });
+}
+
+// ---------- editar rotina ----------
+function openRoutineEdit(rid) {
+  const rs = loadRoutines(), r = rs.find((x) => x.id === rid); if (!r) return;
+  const d = { title: r.title, days: [...r.days], time: `${pad2(r.hh)}:${pad2(r.mm)}`, context: r.context || 'pessoal', allowQuiet: !!r.allowQuiet };
+  openSheet(`<div class="sheet-h"><h3>Editar rotina</h3><button class="xbtn" data-act="close-sheet" aria-label="Fechar">${icon('x', { size: 16, stroke: 2.2 })}</button></div>
+    <div class="composer"><textarea id="rtitle" rows="2"></textarea></div>
+    <div class="understood">Dias</div><div class="chips" id="rdays"></div>
+    <div class="understood">Horário</div><div class="chips"><label class="chip when">${icon('bell', { size: 15 })}às <input type="time" id="rt" style="border:0;background:transparent;font:inherit;color:inherit;width:74px"></label></div>
+    <div class="understood">Para</div><div class="chips" id="rctx"></div>
+    <div class="toggle-row"><div class="tx">Pode tocar no horário de silêncio</div><button class="switch ${d.allowQuiet ? 'on' : ''}" id="raq" role="switch"></button></div>
+    <button class="cta" id="rsave">${icon('check', { size: 19, stroke: 2.4 })}Salvar rotina</button>
+    <button class="cta dark" id="rdel" style="background:transparent;color:var(--late);box-shadow:none;margin-top:6px">${icon('x', { size: 18 })}Apagar rotina</button>`, (el) => {
+    el.querySelector('#rtitle').value = d.title; el.querySelector('#rt').value = d.time;
+    const paint = () => {
+      el.querySelector('#rdays').innerHTML = WD_ORDER.map((x) => `<button class="chip ${d.days.includes(x) ? 'on' : ''}" data-wd="${x}">${WD_SHORT[x]}</button>`).join('');
+      el.querySelector('#rctx').innerHTML = Object.entries(CONTEXTS).map(([x, c]) => `<button class="chip ${x === d.context ? 'on' : ''}" data-ec="${x}"><i class="c" style="background:${c.color}"></i>${c.label}</button>`).join('');
+    };
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.wd) { const x = +b.dataset.wd; d.days = d.days.includes(x) ? d.days.filter((y) => y !== x) : [...d.days, x]; paint(); }
+      if (b.dataset.ec) { d.context = b.dataset.ec; paint(); }
+    });
+    el.querySelector('#raq').onclick = (e) => { d.allowQuiet = !d.allowQuiet; e.currentTarget.classList.toggle('on', d.allowQuiet); };
+    el.querySelector('#rsave').onclick = async () => {
+      const title = el.querySelector('#rtitle').value.trim(), time = el.querySelector('#rt').value || d.time;
+      if (!title || !d.days.length) return toast(!title ? 'Escreva um título' : 'Escolha pelo menos um dia', { err: true, ic: 'alert' });
+      const [hh, mm] = time.split(':').map(Number);
+      // dias futuros já criados com o jeito antigo saem e são recriados com o novo
+      const futureIds = new Set(), keep = {};
+      for (const [k, iid] of Object.entries(r.made || {})) {
+        const x = S.items.find((y) => y.id === iid);
+        if (x && x.status === 'open' && x.dueAt && new Date(x.dueAt) > now()) futureIds.add(iid); else if (x || iid !== true) keep[k] = iid;
+      }
+      for (const x of S.items) if (x.status === 'open' && x.channel === 'manual' && x.title === r.title && x.dueAt && new Date(x.dueAt) > now()) futureIds.add(x.id);
+      for (const [k, iid] of Object.entries(keep)) if (iid === true && k >= localDateKey(now(), TZ)) delete keep[k];
+      if (futureIds.size) {
+        const st = await safe(() => store.undo({
+          items: S.items.map((x) => (futureIds.has(x.id) ? { ...x, status: 'deleted', deletedAt: now().toISOString() } : x)),
+          reminders: S.reminders.map((y) => (futureIds.has(y.itemId) && y.status === 'scheduled' ? { ...y, status: 'canceled' } : y)),
+        })); if (!st) return; S = st;
+      }
+      Object.assign(r, { title, days: [...d.days].sort(), hh, mm, context: d.context, allowQuiet: d.allowQuiet, made: keep });
+      saveRoutines(rs); closeSheet();
+      await syncRoutines(); render();
+      toast(`Rotina salva · ${daysLabel(r.days)}, ${time}`, { ic: 'refresh' });
+    };
+    el.querySelector('#rdel').onclick = () => {
+      if (!confirm(`Apagar a rotina "${r.title}"? Os dias já criados continuam nas pendências.`)) return;
+      saveRoutines(rs.filter((x) => x.id !== r.id)); closeSheet(); render(); toast('Rotina apagada', { ic: 'x', ms: 1800 });
+    };
+    paint();
+  });
 }
 
 // ---------- toast e banner ----------
@@ -576,6 +771,11 @@ document.addEventListener('click', async (e) => {
     case 'reopen': { const it = S.items.find((x) => x.id === id); const r = await store.undo({ items: S.items.map((x) => (x.id === id ? { ...x, status: 'open', completedAt: null } : x)), reminders: S.reminders }); S = r; render(); toast('Reaberto', { ic: 'undo' }); break; }
     case 'reply': toast(store.mode === 'server' ? 'Abrindo a conversa…' : 'Resposta direta chega com a integração do WhatsApp/webmail', { ic: 'chat' }); break;
     case 'compose': openCompose(); break;
+    case 'edit': openEdit(id); break;
+    case 'rt-edit': openRoutineEdit(b.dataset.rid); break;
+    case 'rt-new': openCompose('', { repeat: true }); break;
+    case 'rt-pause': { const rs = loadRoutines(); const r = rs.find((x) => x.id === b.dataset.rid); if (r) { r.paused = !r.paused; saveRoutines(rs); if (!r.paused) await syncRoutines(); render(); toast(r.paused ? 'Rotina pausada' : 'Rotina retomada', { ic: 'refresh', ms: 1800 }); } break; }
+    case 'rt-del': { const rs = loadRoutines(); const r = rs.find((x) => x.id === b.dataset.rid); if (r && confirm(`Apagar a rotina "${r.title}"? Os lembretes já criados continuam nas pendências.`)) { saveRoutines(rs.filter((x) => x.id !== r.id)); render(); toast('Rotina apagada', { ic: 'x', ms: 1800 }); } break; }
     case 'close-sheet': closeSheet(); break;
     case 'seg': location.hash = `#/pendencias?seg=${b.dataset.seg}`; break;
     case 'day': ui.day = +b.dataset.d; render(); break;
@@ -611,9 +811,10 @@ async function boot() {
   if (store.inboxStatus) ui.inbox = await store.inboxStatus().catch(() => null);
   await refreshPushStatus();
   render();
+  if (!ui.error) await syncRoutines();
   const tick = async () => { if (store.mode === 'demo' && !ui.loading) { const sent = await store.tick(); if (sent.length) { S = store.state(); render(); } } };
   setInterval(tick, 15000); tick();
-  document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible') { if (store.mode === 'server') { const st = await safe(() => store.init()); if (st) S = st; } await refreshPushStatus(); render(); } });
+  document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible') { if (store.mode === 'server') { const st = await safe(() => store.init()); if (st) S = st; } await refreshPushStatus(); render(); syncRoutines(); } });
 }
 window.__prumo = { get state() { return S; }, ui, openCompose, openSnooze, toast, inAppBanner, render, get store() { return store; } };
 boot();
