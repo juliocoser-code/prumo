@@ -156,6 +156,15 @@ function errbar() {
   return ui.error ? `<div class="errbar">${icon('alert', { size: 20 })}<span>${esc(ui.error)}</span>${/Ajustes/.test(ui.error) ? '<a href="#/config" style="background:var(--late);color:#fff;height:32px;padding:0 12px;border-radius:9px;font-size:13.5px;font-weight:700;display:flex;align-items:center;text-decoration:none">Abrir Ajustes</a>' : '<button data-act="retry">Tentar de novo</button>'}</div>` : '';
 }
 
+// ---------- mandar lembrete para outra pessoa (WhatsApp, sem custo) ----------
+function shareText(i) {
+  const when = i.dueAt || i.reminderAt;
+  const quando = when ? `${dayLabel(when)}, ${String(tzParts(when, TZ).d).padStart(2, '0')}/${String(tzParts(when, TZ).m).padStart(2, '0')} às ${T(when)}` : '';
+  const head = i.kind === 'compromisso' ? 'Lembrete de compromisso' : i.kind === 'retorno' ? 'Lembrete: aguardo seu retorno' : 'Lembrete de tarefa';
+  return [`*${head}*`, i.title, quando && `Quando: ${quando}`, i.place && `Local: ${i.place}`, i.detail && i.kind !== 'responder' && i.detail].filter(Boolean).join('\n');
+}
+const waLink = (i) => `https://wa.me/?text=${encodeURIComponent(shareText(i))}`;
+
 // ---------- telas ----------
 function screenHoje() {
   const b = buckets(), p = tzParts(now(), TZ);
@@ -264,7 +273,10 @@ function screenConfig() {
   return `<div class="screen">${errbar()}<div class="eyebrow">Prumo · versão 0.1</div><h1 class="title">Ajustes</h1>
   <div class="group"><div class="gh">Notificações</div><div class="card">${pushStatusHtml()}</div></div>
   <div class="group"><div class="card">
-    <div class="set">${ico('today', '#E0521D')}<div class="tx">Resumo diário<small>O que pede você e a agenda do dia</small></div><input type="time" value="${st.summaryTime}" data-set="summaryTime"></div>
+    <div class="set">${ico('today', '#E0521D')}<div class="tx">Resumo da manhã<small>O que tem hoje: agenda e tarefas</small></div><input type="time" value="${st.summaryTime}" data-set="summaryTime"></div>
+    <div class="set">${ico('moon', '#2C3E66')}<div class="tx">Fechamento do dia<small>Amanhã + o que ficou para trás</small></div>${st.eveningSummary ? `<input type="time" value="${st.eveningTime}" data-set="eveningTime">` : ''}${sw('eveningSummary', st.eveningSummary)}</div>
+    <div class="set">${ico('calendar', '#E0521D')}<div class="tx">Aviso antes dos compromissos</div><select data-set="apptLeadMin" class="selx">${[10, 15, 30, 45, 60].map((m) => `<option value="${m}" ${+st.apptLeadMin === m ? 'selected' : ''}>${m} min</option>`).join('')}</select></div>
+    <div class="set">${ico('flag', '#9A4B2C')}<div class="tx">Lembrar tarefas abertas<small>Entre a manhã e o fechamento, fora do silêncio</small></div>${st.taskNag ? `<select data-set="taskNagHours" class="selx">${[1, 2, 3, 4].map((h) => `<option value="${h}" ${+st.taskNagHours === h ? 'selected' : ''}>a cada ${h}h</option>`).join('')}</select>` : ''}${sw('taskNag', st.taskNag)}</div>
     <div class="set">${ico('moon', '#4B4A7A')}<div class="tx">Silêncio a partir de</div><input type="time" value="${st.quietStart}" data-set="quietStart"></div>
     <div class="set">${ico('moon', '#4B4A7A')}<div class="tx">Silêncio até</div><input type="time" value="${st.quietEnd}" data-set="quietEnd"></div>
   </div><div class="gf">No silêncio, só tocam os lembretes marcados com "pode tocar no silêncio". O resto fica guardado e chega às ${st.quietEnd}.${isQuiet(now(), st) ? ' <b>Agora está no horário de silêncio.</b>' : ''}</div></div>
@@ -331,6 +343,7 @@ function screenItem(id, q) {
       ${rem ? `<div class="opt">${icon('moon', { size: 19 })}<span class="lbl">Toca no silêncio</span><b>${rem.allowQuiet ? 'Sim' : 'Não'}</b></div>` : ''}
       ${i.snoozedUntil && snoozed(i) ? `<div class="opt">${icon('clock', { size: 19 })}<span class="lbl">Adiado até</span><b>${whenLabel(i.snoozedUntil)}</b></div>` : ''}
     </div>
+    ${i.status === 'open' && i.kind !== 'responder' ? `<a class="wa-btn" href="${waLink(i)}" target="_blank" rel="noopener">${icon('send', { size: 18 })}Mandar por WhatsApp para alguém</a>` : ''}
     ${hist.length ? `<ul class="history">${hist.map(([w, t]) => `<li>${esc(w)}<time>${dayLabel(t)} ${T(t)}</time></li>`).join('')}</ul>` : ''}
   </div>
   ${i.status === 'open' ? `<div class="actionbar"><div class="in">${replyBtn}<button data-act="snooze" data-id="${i.id}">${icon('clock', { size: 19 })}Adiar</button><button class="primary" data-act="done" data-id="${i.id}">${icon('check', { size: 19, stroke: 2.4 })}Concluir</button></div></div>`
@@ -559,8 +572,14 @@ function openCompose(prefill = '', { repeat = false } = {}) {
       }
       const r = await safe(() => store.create({ title, kind, context, when: when ? when.toISOString() : null, allowQuiet: draft.allowQuiet })); if (!r) return;
       S = r.state; render();
-      el.querySelector('#cbody').innerHTML = `<div class="success"><div class="ring">${icon('check', { size: 38, stroke: 2.6 })}</div><h4>Anotado.</h4><p>${when ? `Te lembro ${dayLabel(when, false)} às ${T(when)}.` : 'Está nas suas pendências.'}</p></div>`;
-      setTimeout(() => { closeSheet(); toast(when ? `Lembrete criado · ${whenLabel(when)}` : 'Anotação salva', { undo: r.undo, ic: 'check' }); }, 1300);
+      const it = r.item || { title, kind, dueAt: when && when.toISOString() };
+      el.querySelector('#cbody').innerHTML = `<div class="success"><div class="ring">${icon('check', { size: 38, stroke: 2.6 })}</div><h4>Anotado.</h4><p>${when ? `Te lembro ${dayLabel(when, false)} às ${T(when)}.` : 'Está nas suas pendências.'}</p>
+        <a class="wa-btn" id="waSend" href="${waLink(it)}" target="_blank" rel="noopener">${icon('send', { size: 18 })}Mandar para alguém pelo WhatsApp</a>
+        <button class="cta ghost" id="okClose" style="max-width:300px;margin:10px auto 0">Pronto</button></div>`;
+      const finish = () => { closeSheet(); toast(when ? `Lembrete criado · ${whenLabel(when)}` : 'Anotação salva', { undo: r.undo, ic: 'check' }); };
+      el.querySelector('#okClose').onclick = finish;
+      el.querySelector('#waSend').addEventListener('click', () => setTimeout(finish, 400));
+      setTimeout(() => { if (document.body.contains(el)) finish(); }, 12000);
     };
     paint();
     setTimeout(() => ta.focus(), 350);
@@ -794,7 +813,8 @@ document.addEventListener('click', async (e) => {
 });
 document.addEventListener('change', async (e) => {
   const k = e.target.dataset.set; if (!k || !e.target.value) return;
-  const st = await safe(() => store.updateSettings({ [k]: e.target.value })); if (st) { S = st; render(); toast('Horário salvo', { ic: 'clock', ms: 1800 }); }
+  const v = e.target.tagName === 'SELECT' ? Number(e.target.value) : e.target.value;
+  const st = await safe(() => store.updateSettings({ [k]: v })); if (st) { S = st; render(); toast('Horário salvo', { ic: 'clock', ms: 1800 }); }
 });
 window.addEventListener('hashchange', () => { closeSheet(true); render(); window.scrollTo(0, 0); });
 

@@ -281,3 +281,11 @@ a.stat { text-decoration: none; color: inherit; }
 .topfade { position: fixed; top: 0; left: 0; right: 0; height: var(--sat); z-index: 40; background: rgba(246,243,238,.88); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); pointer-events: none; }
 .seg button { font-size: 13.5px; gap: 4px; }
 .msgs { display: inline-block; margin-left: 6px; background: var(--late); color: #fff; font-size: 11px; font-weight: 700; border-radius: 9px; padding: 1px 6px; vertical-align: 2px; }
+
+.selx { border: 0; background: var(--line-2); border-radius: 9px; padding: 7px 10px; font-size: 15px; font-weight: 600; color: var(--ink); -webkit-appearance: none; appearance: none; }
+.set .switch { margin-left: 6px; }
+.set .tx { min-width: 0; }
+.set input[type=time] { max-width: 104px; flex: none; }
+.set .switch { flex: none; }
+.wa-btn { display: flex; align-items: center; justify-content: center; gap: 8px; height: 46px; border-radius: 14px; background: #E7F6EC; color: #157A42; font-weight: 700; font-size: 15.5px; text-decoration: none; margin-top: 16px; }
+.success .wa-btn { max-width: 300px; margin: 18px auto 0; padding: 0 18px; }

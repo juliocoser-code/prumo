@@ -3,7 +3,12 @@
 
 export const DEFAULT_SETTINGS = {
   tz: 'America/Sao_Paulo',
-  summaryTime: '07:30',
+  summaryTime: '07:00',      // resumo da manhã: o que tem hoje
+  eveningSummary: true,
+  eveningTime: '21:00',      // resumo da noite: amanhã + o que ficou para trás hoje
+  apptLeadMin: 30,           // aviso antes de cada compromisso
+  taskNag: true,
+  taskNagHours: 2,           // lembrete das tarefas abertas a cada N horas
   quietStart: '22:00',
   quietEnd: '07:00',
   importantAlerts: true,
@@ -116,13 +121,53 @@ export function summaryPayload(items, now, s) {
   if (appts.length) parts.push(`${appts.length} compromisso${appts.length > 1 ? 's' : ''} (1º às ${hhmm(appts[0].dueAt, s.tz)})`);
   if (late.length) parts.push(`${late.length} resposta${late.length > 1 ? 's' : ''} atrasada${late.length > 1 ? 's' : ''}`);
   if (waiting.length) parts.push(`${waiting.length} retorno${waiting.length > 1 ? 's' : ''} a cobrar`);
+  const tasks = openTasks(items, now, s);
+  if (tasks.length) parts.push(`${tasks.length} tarefa${tasks.length > 1 ? 's' : ''}`);
+  const lines = [...appts.map((i) => ({ title: `${hhmm(i.dueAt, s.tz)} ${i.title}` })), ...tasks];
   return {
     title: 'Seu dia no prumo',
-    body: parts.length ? parts.join(' · ') : 'Nada pendente. Bom dia!',
+    body: parts.length ? parts.join(' · ') + (lines.length ? '\n' + bullet(lines, 4) : '') : 'Nada pendente. Bom dia!',
     tag: `summary-${today}`,
     url: './#/hoje?from=summary',
     kind: 'summary',
   };
+}
+
+const isTask = (i) => i.kind === 'nota' || i.kind === 'prazo';
+const snoozedNow = (i, now) => i.snoozedUntil && new Date(i.snoozedUntil) > now;
+function dayOffsetKey(now, tz, d) { const p = tzParts(now, tz); return localDateKey(zoned(p.y, p.m, p.d + d, 12, 0, tz), tz); }
+function bullet(list, n = 3, fmt = (i) => i.title) {
+  const lines = list.slice(0, n).map((i) => '• ' + trim(fmt(i), 60));
+  if (list.length > n) lines.push(`• e mais ${list.length - n}`);
+  return lines.join('\n');
+}
+/** Tarefas que ainda pedem ação hoje: sem data, vencidas ou com prazo até o fim do dia */
+export function openTasks(items, now, s) {
+  const today = localDateKey(now, s.tz);
+  return items.filter((i) => i.status === 'open' && isTask(i) && !snoozedNow(i, now) && (!i.dueAt || localDateKey(i.dueAt, s.tz) <= today))
+    .sort((a, b) => new Date(a.dueAt || 8.64e15) - new Date(b.dueAt || 8.64e15));
+}
+export function eveningPayload(items, now, s) {
+  const open = items.filter((i) => i.status === 'open');
+  const tomorrow = dayOffsetKey(now, s.tz, 1);
+  const appts = open.filter((i) => i.kind === 'compromisso' && i.dueAt && localDateKey(i.dueAt, s.tz) === tomorrow).sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
+  const dueTomorrow = open.filter((i) => isTask(i) && i.dueAt && localDateKey(i.dueAt, s.tz) === tomorrow);
+  const left = openTasks(items, now, s);
+  const late = open.filter((i) => i.kind === 'responder' && isLate(i, now));
+  const parts = [];
+  parts.push(appts.length ? `Amanhã: ${appts.length} compromisso${appts.length > 1 ? 's' : ''}\n${bullet(appts, 3, (i) => `${hhmm(i.dueAt, s.tz)} ${i.title}`)}` : 'Amanhã: agenda livre.');
+  if (dueTomorrow.length) parts.push(`Prazos amanhã: ${dueTomorrow.length}`);
+  if (left.length) parts.push(`Ficou para trás hoje (${left.length}):\n${bullet(left)}`);
+  if (late.length) parts.push(`${late.length} resposta${late.length > 1 ? 's' : ''} atrasada${late.length > 1 ? 's' : ''}`);
+  return { title: 'Fechamento do dia', body: parts.join('\n'), tag: `evening-${localDateKey(now, s.tz)}`, url: './#/agenda?from=evening', kind: 'evening' };
+}
+export function nagPayload(tasks, s) {
+  return { title: `${tasks.length} tarefa${tasks.length > 1 ? 's' : ''} para hoje`, body: bullet(tasks), tag: 'nag', url: './#/pendencias?seg=prazos&from=push', kind: 'nag' };
+}
+export function apptPayload(item, now, s) {
+  const min = Math.max(1, Math.round((new Date(item.dueAt) - now) / 60000));
+  return { title: `Em ${min} min · ${hhmm(item.dueAt, s.tz)}`, body: `${item.title}${item.place ? '\n' + item.place : ''}`, tag: `appt-${item.id}`, url: `./#/item/${item.id}?from=push`, itemId: item.id, kind: 'appt',
+    actions: [{ action: 'snooze', title: 'Adiar 1h' }, { action: 'done', title: 'Concluir' }] };
 }
 
 export function isLate(item, now, hours = 24) {
@@ -160,6 +205,8 @@ export function planDispatch({ now, reminders, items, settings, log }) {
   for (const r of due) {
     const item = byId.get(r.itemId);
     if (r.kind !== 'test' && (!item || item.status !== 'open')) { cancel.push(r.id); continue; }
+    // compromissos agora são avisados pela regra "X min antes" (abaixo); some o lembrete automático antigo
+    if (r.kind === 'reminder' && item.kind === 'compromisso' && item.dueAt && Math.abs(new Date(r.fireAt) - (new Date(item.dueAt) - 15 * 60e3)) < 90e3) { cancel.push(r.id); continue; }
     if (item && item.snoozedUntil && new Date(item.snoozedUntil) > now && r.kind === 'new_item') {
       defer.push({ id: r.id, fireAt: new Date(item.snoozedUntil).toISOString(), reason: 'snoozed' }); continue;
     }
@@ -191,13 +238,30 @@ export function planDispatch({ now, reminders, items, settings, log }) {
     send.push({ kind: 'new_item', conversationId: conv, reminderIds: list.map((x) => x.r.id), payload: newItemPayload(list.map((x) => x.item), s, list.length) });
   }
 
-  // resumo diário (toca no horário escolhido, uma vez por dia)
+  // resumos: manhã e noite (tocam no horário escolhido, uma vez por dia, mesmo no silêncio)
   const p = tzParts(now, s.tz);
   const today = localDateKey(now, s.tz);
-  const already = (log || []).some((l) => l.kind === 'summary' && l.day === today);
-  const mins = p.hh * 60 + p.mm, st = toMin(s.summaryTime);
-  if (!already && mins >= st && mins < st + 180) { // até 3h de tolerância se o servidor ficou fora
-    send.push({ kind: 'summary', day: today, reminderIds: [], payload: summaryPayload(items, now, s) });
+  const mins = p.hh * 60 + p.mm, st = toMin(s.summaryTime), et = toMin(s.eveningTime);
+  const sentToday = (kind) => (log || []).some((l) => l.kind === kind && l.day === today);
+  if (!sentToday('summary') && mins >= st && mins < st + 180) send.push({ kind: 'summary', day: today, reminderIds: [], payload: summaryPayload(items, now, s) });
+  if (s.eveningSummary && !sentToday('evening') && mins >= et && mins < et + 120) send.push({ kind: 'evening', day: today, reminderIds: [], payload: eveningPayload(items, now, s) });
+
+  // compromissos: aviso X min antes
+  const lead = Number(s.apptLeadMin) * 60e3;
+  for (const i of items) {
+    if (i.status !== 'open' || i.kind !== 'compromisso' || !i.dueAt || snoozedNow(i, now)) continue;
+    const due = new Date(i.dueAt);
+    if (now < due - lead || now >= due) continue;
+    if ((log || []).some((l) => l.kind === 'appt' && l.itemId === i.id)) continue;
+    if (quiet && !i.allowQuiet) continue;
+    send.push({ kind: 'appt', reminderIds: [], payload: apptPayload(i, now, s) });
+  }
+
+  // tarefas abertas: lembrete a cada N horas, entre o resumo da manhã e o da noite, fora do silêncio
+  if (s.taskNag && !quiet && mins >= st && mins < et && !send.some((x) => x.kind === 'summary')) {
+    const tasks = openTasks(items, now, s);
+    const lastAny = (log || []).filter((l) => ['nag', 'summary'].includes(l.kind)).map((l) => new Date(l.sentAt || 0)).sort((a, b) => b - a)[0];
+    if (tasks.length && (!lastAny || now - lastAny >= Number(s.taskNagHours) * 3600e3 - 60e3)) send.push({ kind: 'nag', reminderIds: [], payload: nagPayload(tasks, s) });
   }
   return { send, defer, cancel };
 }

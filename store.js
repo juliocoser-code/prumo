@@ -81,7 +81,7 @@ class DemoStore {
     if (kind === 'retorno' && !it.waitingSince) it.waitingSince = new Date().toISOString();
     const undo = this.checkpoint();
     this.s.items.push(it);
-    const at = kind === 'retorno' ? when : (kind === 'compromisso' ? leadTime(it) : when);
+    const at = kind === 'compromisso' ? null : when; // compromissos: aviso automático X min antes
     if (at) this.s.reminders.push({ id: uid('r'), itemId: id, kind: 'reminder', fireAt: new Date(at).toISOString(), allowQuiet: !!allowQuiet, status: 'scheduled' });
     this.save();
     return { state: this.state(), undo, item: it };
